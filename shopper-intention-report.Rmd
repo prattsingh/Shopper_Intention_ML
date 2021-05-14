@@ -1,0 +1,648 @@
+---
+title: 'Capstone: User Shopping Intentions'
+author: "Pratyush Singh"
+date: "5/13/2021"
+output: 
+  pdf_document: 
+    fig_caption: yes
+    includes: 
+      in_header: preamble.tex
+    toc: true
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+The tremendous growth of the internet population has increased the trend of 
+online shopping, commonly known Business to Customer (B2C), exponentially.
+More than 310 million active customers have bought nearly 136 billion USD
+goods in 2016 from Amazon which is the leading e-commerce company in the world.
+The number of active users of Alibaba.com, one of the largest online shopping
+platform, was 82.67 thousand in 2017 that was increased by 43.3% from the 
+previous year .
+
+With e-commerce becoming more and more prevalent in today’s economy it is important for businesses within this sector to understand what factors into a site visitor making a purchase, and being able to put their attention on potential customers.
+Understanding the behavior and intention of online customers has become immensely important for marketing, improving customer experience which, in return, increases
+sales. 
+
+For this Analysis We will use Online Shoppers Purchasing Intention data set provided on the UC Irvine’s Machine Learning Repository. There are three categories of variables in the data , data related to page visited by user, google analytics metrics and user visit data . Details about data are available on the following link : https://archive.ics.uci.edu/ml/datasets/Online+Shoppers+Purchasing+Intention+Dataset#
+
+We will divide the data into two parts initially users and validation set (final hold-out set). We will then divide user set into training and testing set for model selection and evaluation.
+
+For Evaluation we will use overall accuracy for all models i.e, the proportion of correctly predicted estimates in the test set.
+
+# Analysis
+
+We will load the following libraries
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+library(tidyverse)
+library(caret)
+library(data.table)
+library(corrplot)
+library(readr)
+library(fastDummies)
+library(matrixStats)
+library(gam)
+library(MASS)
+library(randomForest)
+library(cowplot)
+
+```
+
+
+We will load the RData (Environment) of the code.r to avoid re-running the models . 
+Most of the codes are also either left out of the report or not evaluated to keep the report neat . To re-knit the report it is highly recommended to run the code.R file and load its Environment here. 
+```{r}
+load("shopper-intention.RData")
+```
+
+
+## Data Mining and Preparation
+
+```{r eval=FALSE}
+###############################################################################
+# Creating user and validation set (final hold-out test set)
+################################################################################
+
+temp <- tempfile()
+download.file("https://archive.ics.uci.edu/ml/
+              machine-learning-databases/00468/online_shoppers_intention.csv",
+              "online_shoppers_intention.csv")
+
+# ignore warning after unzip
+d <- read.csv("online_shoppers_intention.csv")
+```
+```{r}
+class(d)
+```
+
+We will convert the categorical and Boolean variables into dummy Dummy variables and One-Hot Encoded Variables.
+
+```{r , eval=FALSE}
+#Created Dummy variables for categorical data and cleaning data
+dat <- d %>% mutate(VisitorType = as.factor(VisitorType) ,
+                            Month = as.factor(Month), 
+                            Weekend = as.integer(Weekend),
+                            Revenue = as.integer(Revenue)) %>% 
+  dummy_columns(select_columns = c("VisitorType","Month") ) %>% 
+  dplyr::select(-Month , - VisitorType )
+```
+
+Now We Divide the data into user and validation set . Where the user set contains 90% of the data and the validation set has the remaining 10%.
+
+```{r }
+# Validation set will be 10% of users data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = dat$Revenue, times = 1, p = 0.1, list = FALSE)
+users <- dat[-test_index,]
+validation <- dat[test_index,]
+```
+
+
+## Exploration
+
+```{r}
+glimpse(users)
+```
+
+Our Target Class is Revenue Which states weather the user purchased something(1) or not (0).
+
+```{r echo=FALSE , fig.cap= "Proportion of Revenue"}
+#We need to explore the different features in the dataset
+mycols <- c("#0073C2FF",  "#CD534CFF")
+
+#labels are proportion of Revenue(4 digits) in form of pie chart 
+users %>% group_by(Revenue) %>%
+  summarise(n=n() , prop = (n/10561)*100) %>%  #proportion of Revenue 
+  ggplot(aes(x = "" ,y = prop , fill = as.factor(Revenue))) + 
+  geom_bar(stat = 'identity' , width = 1 , color = "white") + 
+  coord_polar("y" , start = 0)  + 
+  geom_text(aes(label=sprintf("%0.2f", round(prop, digits = 2))), #Two digits after decimal in proportion label
+            position = position_stack(vjust = 0.5), 
+            color = "white", size=4) +
+  theme_void() + 
+  scale_fill_manual(values = mycols) + labs(fill = "Revenue")
+
+```
+
+It is evident that majority of users (88.7%) do not end up making a purchase and only 16.37% users make purchase on the website for a session.
+
+This trend follows through other features as well where majority of users do not make purchase and hence the Revenue is 0.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE , fig.cap= "Distribution of Features by Revenue"}
+#p1 frequency of revenue by OS
+p1 <- users %>%  
+  ggplot(aes(as.numeric(OperatingSystems) , fill = as.factor(Revenue))) + 
+  geom_histogram(bins = 15) + theme_classic() + xlab("Operating System") + 
+  labs(fill = "Revenue")
+
+#p2 frequency of revenue by Browser
+p2 <- users %>%  
+  ggplot(aes(as.numeric(Browser) , fill = as.factor(Revenue))) + 
+  geom_histogram(bins = 25) + theme_classic() + xlab("Browser") + 
+  theme(legend.position = 'none')
+
+#p3 frequency of revenue by Region
+p3 <- users %>%  
+  ggplot(aes(as.numeric(Region) , fill = as.factor(Revenue))) + 
+  geom_histogram(bins = 17) + theme_classic() + xlab("Region") + 
+  theme(legend.position = 'none')
+
+#p4 frequency of revenue by traffic type
+p4 <- users %>%  
+  ggplot(aes(as.numeric(TrafficType) , fill = as.factor(Revenue))) + 
+  geom_histogram(bins = 40) + theme_classic() + xlab("Traffic Type")  + 
+  theme(legend.position = 'none')
+
+# Render the four plots in grid
+p5 <- plot_grid(p1, p2, p3,p4, labels = "auto",  align="vh", ncol=2) 
+p5
+```
+
+We can also compare distributions of other features exclusively in the case where purchase is made and when purchase is not made to compare the difference.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE , fig.cap="Distribution of features when Revenue is True"}
+#to then render the four plots next to each other
+p10 <- plot_grid(p6, p7, p8,p9, labels = "auto",  align="vh", ncol=2)
+p10
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE , fig.cap= "Distribution of features where Revenue is False"}
+#to then render the four plots next to each other
+p15 <- plot_grid(p11, p12, p13,p14, labels = "auto",  align="vh", ncol=2)
+p15
+```
+
+We see that when purchase is made more Pages are viewed (PageValue has higher distribution spread) and Exit Rates are lower . These are expected differences in the features.
+
+There are Page Related features(Administrative , Informational , Product Related) and there respective Duration in the data. We will Explore their relation over Revenue class.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE , fig.cap="Effect of Duration on feature by Revenue"}
+#to then render the three plots next to each other
+p19 <- plot_grid(p16, p17, p18,  align="vh", ncol=2)
+p19
+
+```
+
+There seems to be strong correlation between these features and there duration over both classes which we will further explore and use to clean the data for better results.
+
+## Correlation
+
+Let us now explore the correlation between all our variables .
+
+```{r echo=FALSE , fig.cap=" Correlation between Variables"}
+#temp data for correlation plot
+temp_dat <- data.frame(lapply(users,as.numeric))
+#color palette for correlation plot
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+corrplot(cor(temp_dat) , method="color", col=col(200),  
+         type="upper", order="hclust", #hclust to order by correlation coefficient
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         tl.cex = 0.5,
+         number.cex = 0.40 , #control text size of correlation coefficient
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+)
+```
+
+We can see that all the page related features are highly correlated to each other. 
+For a stable model we would should not have highly correlated variables so we will combine these variables together to eliminate  problem.
+
+```{r}
+AvgMinutes <- function(Count, Duration){   
+  if (Duration == 0) { # function to find Average Minute for page related activity
+    output = 0
+  }
+    
+  else if ( Duration != 0) {
+    output = as.numeric(Duration)/as.numeric(Count)
+  }
+    
+  return(output) 
+}
+
+
+users <- users %>% # we apply the function for each page related feature
+  rowwise() %>%
+  mutate(Avg_Admin = AvgMinutes(Administrative , Administrative_Duration),
+         Avg_Info = AvgMinutes(Informational,Informational_Duration),
+         Avg_ProductRel = AvgMinutes(ProductRelated , ProductRelated_Duration))%>%
+  ungroup() %>%
+  dplyr::select(-Administrative , -Administrative_Duration , -Informational , 
+         -Informational_Duration , -ProductRelated , -ProductRelated_Duration)
+
+```
+
+Examining the Correlation among variables again
+
+```{r echo=FALSE , fig.cap="Correlation between variables after cleaning"}
+#temp data for correlation plot after combining related features
+temp_dat2 <- data.frame(lapply(users,as.numeric))
+#color palette for correlation plot
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+corrplot(cor(temp_dat2) , method="color", col=col(200),  
+         type="upper", order="hclust", #hclust to order by correlation coefficient
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         number.cex = 0.40 , #control text size of correlation coefficient
+         tl.cex = 0.5,
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+)
+```
+
+Now the collinearity problem seems to be reduced significantly and we can move forward to our model selection and evaluation.
+
+We will do the same manipulation to the validation set 
+```{r}
+#Doing the same for Validation set 
+validation <- validation %>% 
+  rowwise() %>%
+  mutate(Avg_Admin = AvgMinutes(Administrative , Administrative_Duration),
+         Avg_Info = AvgMinutes(Informational,Informational_Duration),
+         Avg_ProductRel = AvgMinutes(ProductRelated , ProductRelated_Duration))%>%
+  ungroup() %>%
+  dplyr::select(-Administrative , -Administrative_Duration , -Informational , 
+         -Informational_Duration , -ProductRelated , -ProductRelated_Duration)
+```
+
+
+# Modeling
+
+We will use multiple models to select the best one for our final hold-out test. We have excluded Quadratic Discriminant Analysis (qda) model because of large dimensionality of our data which is not suitable for that model.
+
+## K-Means
+
+K-means clustering is a very famous and powerful unsupervised machine learning algorithm. It is used to solve many complex unsupervised machine learning problems.
+
+k-means clustering tries to group similar kinds of items in form of clusters. It finds the similarity between the items and groups them into the clusters. K-means clustering algorithm works in three steps. Lets see what are these three steps.
+
+-Select the k values.
+-Initialize the centroids.
+-Select the group and find the average.
+
+## Logistic Regression
+
+Logistic regression (LR) is a statistical method similar to linear regression since LR finds an equation that predicts an outcome for a binary variable, Y, from one or more response variables, X. However, unlike linear regression the response variables can be categorical or continuous, as the model does not strictly require continuous data.
+
+To predict group membership, LR uses the log odds ratio rather than probabilities and an iterative maximum likelihood method rather than a least squares to fit the final model.
+
+## Linear Discriminant Analysis
+
+LDA is a generative model similar to naive bayes model . It is a dimensionality reduction technique which assumes similar core structure for all parameters so just one pair of parameters are required to find by the algorithm.Forcing this assumption makes the boundary a line, similar to Logistic Regression
+
+## Locally Weighted Regression (Loess)
+
+Loess model uses linear assumption of function (taylor's theorem) and locally fits the data point of given span (subset of closest data) into linear relation.
+When fitting it also takes a weighted approach (more weights to points near the target point).
+We obtain then a fitted model that retains only the point of the model that are close to the target point. The target point then moves away on the x axis and the procedure repeats for each points.
+
+## K- Nearest Neighbour
+
+The k-nearest neighbors (KNN) algorithm is a simple, easy-to-implement supervised machine learning algorithm that can be used to solve both classification and regression problems. 
+
+The KNN algorithm assumes that similar things exist in close proximity. 
+
+The KNN algorithm first initializes a value of K(chosen number of neighbors).Then it calculates the distance between a target and every other data point . Then orders the data on the distance and selects the k nearest points from the target in the same class as the target .
+
+## Random Forest
+
+The main concept of random forest is to create a large number of correlated decision tree where all the decision trees act as an ensemble model,. Each of the decision trees put their prediction of a class and the final decision is based on maximum vote. The result of the Random forest algorithm is more reliable than the decision tree algorithm because each of the trees neutralizes the error of other trees. All the trees act as a committee to make the decision.
+
+## Evaluation
+
+For Evaluation in this report we will use overall accuracy of the model . Which is the proportion of correct predictions made from the test set.
+$$A_{m} = \frac{1}{N} \sum_{i=1}{(\widehat{y_{i}} - y_{i})}$$
+Where $$y_{i}$$ is the actual class of index i and $$\widehat{y_{i}}$$ is the estimate at index i.
+
+# Results
+
+We will Divide user dataset into train and test set for model selection
+
+```{r}
+# Validation set will be 10% of users data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = users$Revenue, times = 1, p = 0.1, list = FALSE)
+train_set <- users[-test_index,]
+test_set <- users[test_index,]
+
+#convert class to factors for prediction and model fitting
+train_set$Revenue <- factor(train_set$Revenue) 
+test_set$Revenue <- factor(test_set$Revenue)
+```
+
+
+## K-Means 
+
+Firstly, We will define a function that can predict classes from the centers formed by K-Means training (as it is an unsupervised model) 
+
+```{r eval=FALSE}
+#predict function for kmeans
+predict_kmeans <- function(x, k) {
+  centers <- k$centers    # extract cluster centers
+  # calculate distance to cluster centers
+  distances <- sapply(1:nrow(x), function(i){
+    apply(centers, 1, function(y) dist(rbind(x[i,], y)))
+  })
+  max.col(-t(distances))  # select cluster with min distance to center
+}
+```
+
+Now we can train the object and use the defined function to form results
+
+```{r eval=FALSE}
+# k means train object k  
+k <- kmeans(train_set[,-10] , 2)
+
+y_hat_kmeans <- ifelse(predict_kmeans(test_set[,-10] , k) == 1 , 1 , 0) %>% 
+  factor() #ifelse function to create estimate class from kmeans train object
+acc_kmeans <- confusionMatrix(y_hat_kmeans , test_set$Revenue)$overall['Accuracy']
+```
+
+```{r echo=FALSE}
+acc_kmeans
+```
+
+
+## Logistic Regression
+
+We will use Caret package with glm (generalized linear model) to train object
+
+```{r eval=FALSE}
+#logical Regression model
+lr <- train(Revenue~. , method= 'glm' , #generalized linear model for log regression
+            data = train_set)
+
+y_hat_lr <- predict(lr , test_set[,-10])
+acc_lr <- confusionMatrix(y_hat_lr , test_set$Revenue)$overall['Accuracy']
+```
+
+```{r echo=FALSE}
+acc_lr
+```
+
+## Linear Discriminant Analysis (LDA)
+
+```{r eval=FALSE}
+lda <- train(Revenue~. , 
+             method="lda" , #lda method 
+             data = train_set)
+y_hat_lda <- predict(lda , test_set[,-10])
+acc_lda <- confusionMatrix(y_hat_lda , test_set$Revenue)$overall['Accuracy']
+
+```
+
+```{r echo=FALSE}
+acc_lda
+```
+
+The Accuracy of logistic Regression and LDA model are identical due to the similar approach of these two models which was expected.
+
+
+## Locally Weighted Regression (Loess)
+
+```{r eval=FALSE}
+loess <- train(Revenue~. ,
+               method = "gamLoess" , #Loess method 
+               data = train_set)
+
+y_hat_loess <- predict(loess , test_set[,-10])
+
+acc_loess <- confusionMatrix(y_hat_loess , test_set$Revenue)$overall['Accuracy']
+
+```
+
+```{r echo=FALSE}
+acc_loess
+```
+
+## K-Nearest Neighbour (KNN)
+
+For KNN model we can tune the parameter K using tuneControl in caret package to select the best value of K for highest accuracy 
+
+```{r eval=FALSE}
+tuning <- data.frame(k = seq(3, 29, 2)) #tuning parameter for value of k in knn
+```
+
+Using odd values of K from 3 to 29 we will train KNN model. This algorithm takes some time to run.
+
+```{r eval=FALSE}
+train_knn <- train(Revenue~.,
+                   method = "knn", 
+                   tuneGrid = tuning ,
+                   data = train_set)
+```
+
+We can see the best values of K that maximizes the  accuracy score of the model.
+
+```{r echo=FALSE , fig.cap= "Optimal value of K in KNN"}
+#plotting knn train object to see optimal value of k
+ggplot(train_knn, highlight = TRUE)
+
+```
+```{r}
+train_knn$bestTune
+```
+The optimal value of K is 25 which will be used while making estimate of the class
+
+```{r eval=FALSE}
+y_hat_knn <- predict(train_knn, test_set[,-10])
+acc_knn <- mean(y_hat_knn == test_set$Revenue)
+```
+
+```{r echo=FALSE}
+acc_knn
+```
+
+## Random Forest
+
+In Random Forest we will use manual control for training rf object .
+Instead of using Bootstrap , we will use repeated cross validation method using 10 fold cross validation repeated 3 times and using grid search. 
+
+```{r eval=FALSE}
+# control for random forest train
+control <- trainControl(method='repeatedcv', #repeated cross validation method for random forest
+                        number=10,  # ten folds cross-validations
+                        repeats=3, #repeated 3 times
+                        search='grid') 
+# grid search method , Each axis of grid is an 
+# algorithm parameter and point in grid are specific combinations of parameter
+```
+
+We will also use tune mtry with odd values between 2 and 10 and also set manual ntree number to 501 . This algorithm takes high memory and time so controls , tuning and ntree should be set accordingly.
+
+```{r eval=FALSE}
+rf <- train(Revenue~. ,
+            method = 'rf' ,
+            tuneGrid = data.frame(mtry = c(3,5,7,9)), #tuning parameter for mtry 
+            trControl = control ,
+            ntree = 501 ,  #no of trees in algorithm
+            data = train_set)
+```
+
+Examining the tuning parameters for best fit. 
+
+```{r echo=FALSE , fig.cap="Optimal value of mtry in Random Forest"}
+ggplot(rf, highlight = TRUE)
+```
+```{r}
+rf$bestTune
+```
+This value of mtry = 5 will be used in the final test as it is found to be optimum .
+
+```{r eval=FALSE}
+y_hat_rf <- predict(rf , test_set[,-10])
+acc_rf <- mean(y_hat_rf == test_set$Revenue)
+```
+
+```{r echo=FALSE}
+acc_rf
+```
+
+Let us review the accuracies of all our models .
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+accuracy <- data_frame(Methods=c("K-Means",
+                                 "Logical Regression" ,"LDA" , "Loess" ,"KNN"  , "Random Forest"),
+                           Accuracy = c(acc_kmeans ,acc_lr , acc_lda,acc_loess ,acc_knn , 
+                                    acc_rf))
+
+accuracy %>% knitr::kable()
+```
+
+
+## ENSEMBLE
+
+We will also try a simple ensemble model by combining the estimates of all of the models we have tried .
+We will simply predict on the basis of average of all model predictions where if all models give majority to one class it is predicted otherwise the second class is predicted.
+
+Firstly combining the estimates from all the models to a single matrix column wise.
+
+```{r eval=FALSE}
+#combine all model results (class estimates) into single matrix
+models <- cbind(y_hat_kmeans , y_hat_knn , y_hat_lda , y_hat_loess , y_hat_lr , y_hat_rf)
+```
+
+We can use simple ifelse statement to predict class on majority of estimates by all models
+
+```{r eval=FALSE}
+# if majority of models predict 1(Revenue true) predict True otherwise False
+y_hat_ens <- ifelse(rowMeans(models == 1) > .5 , 0 , 1 ) %>% factor()
+#Accuracy of ensemble model
+acc_ens <- mean(y_hat_ens == test_set$Revenue)
+```
+
+```{r echo=FALSE}
+acc_ens
+```
+
+
+```{r echo=FALSE}
+accuracy <- bind_rows(accuracy,
+                      data_frame(Methods="Ensemble Model",  
+                                 Accuracy = acc_ens))
+accuracy %>% knitr::kable()
+```
+
+
+
+We have observed that among all the models we have evaluated  Random Forest performed the best with an over all accuracy of over 89%. Hence , we will use Random Forest model for our final hold-out test on the validation set .
+
+# Final Evakuation
+
+## Random Forest with all Features
+
+Convert our target class into factor for model fitting and prediction
+```{r}
+users$Revenue <- factor(users$Revenue)
+validation$Revenue <- factor(validation$Revenue)
+```
+
+```{r eval=FALSE}
+# Random Forest
+
+rf_final <- train(Revenue~. ,
+            method = 'rf' ,
+            tuneGrid = rf$bestTune,  #using best tune of model selection 
+            trControl = control ,
+            ntree = 501 ,
+            data = users)
+
+y_hat_final <- predict(rf_final , validation[,-10])
+acc_final <- mean(y_hat_final == validation$Revenue)
+```
+
+```{r echo=FALSE}
+acc_final
+```
+
+We can also look into variable importance in the random forest model to see how each feature contributes in the prediction
+
+
+```{r echo=FALSE , fig.cap="Variable Importance"} 
+ggplot(varImp(rf_final))
+```
+
+
+We will now remove the objects that have significantly low variable importance (<2) to see if it improves our accuracy of the model.
+
+## Random Forest with Feature Selection
+
+```{r eval=FALSE}
+# Selecting features with significant importance and removing low importance 
+# for users and validation set
+users_selected <- users %>% #Feature Selection in user set
+  dplyr::select(- VisitorType_Other , - Month_Feb , - Month_June , - Month_Aug , - SpecialDay , 
+         -Month_Jul , - Month_Sep , - Month_Oct , - Month_Dec , -Month_Mar , -Month_May,
+         - VisitorType_Returning_Visitor)
+
+validation_selected <- validation %>%  #Feature selection in validation set
+  dplyr::select(- VisitorType_Other , - Month_Feb , - Month_June , - Month_Aug , - SpecialDay , 
+         -Month_Jul , - Month_Sep , - Month_Oct , - Month_Dec , -Month_Mar , -Month_May,
+         - VisitorType_Returning_Visitor)
+```
+
+```{r eval=FALSE}
+# Training Random forest on selected features
+rf_selected <- train(Revenue~. ,
+                  method = 'rf' ,
+                  tuneGrid = rf$bestTune,
+                  trControl = control ,
+                  ntree = 501 ,
+                  data = users_selected)
+
+y_hat_selected <- predict(rf_selected , validation_selected[,-9])
+acc_final_selected <- mean(y_hat_selected == validation_selected$Revenue)
+
+```
+
+```{r echo=FALSE}
+acc_final_selected
+```
+
+Our Final Model Accuracy is :
+```{r echo=FALSE}
+accuracy_final %>% knitr::kable()
+```
+
+# Conclusion
+
+In this report we have studied different supervised learning algorithms on the online shopper intention data. The goal of the work was to identify a suitable
+model which can predict the purchase intention of a shopper visiting the web-pages of certain online shop more accurately. For this purpose we see that all the algorithms perform significantly well.
+
+We see that complex and memory consuming algorithms such as Random Forest and Loess . perform the best . Random Forest algorithm with manual tuning and training controls performs the best with an accuracy of more than 90%., which shows that with the given data it is possible to predict user intention with significant accuracy .
+
+We also learned that although high dimensionality helps the algorithm . Selecting right features and algorithm can increase the accuracy and efficiency of the model significantly.Our insight also shows that Page Value is very important for revenue generation so focusing on that feature can bring great results.
+
+Although we did try a simpler ensemble model. There are different , more complex ways of performing ensemble which we did not show here. Other methods such as XGBoost classifier can also be user in R using caret which we did not include here .
+The data could have had other features providing better context to the dataset and users such as buying history and whishlist/cart information could be helpful.
